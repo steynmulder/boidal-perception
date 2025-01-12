@@ -1,15 +1,13 @@
+use std::f32::consts::PI;
+
 use macroquad::prelude::*;
 
 use miniquad::window::set_window_size;
 use ::rand::*;
 
-use std::process::exit;
-use std::thread;
-use std::time::{Duration};
-
 const CANVAS_WIDTH : u32 = 800;
 const CANVAS_HEIGHT : u32 = 450;
-const NUMBER_BOIDS : u32 = 100;
+const NUMBER_BOIDS : u32 = 10000;
 
 struct Boid {
     x: f32,
@@ -44,6 +42,29 @@ impl Boid {
         self.y += self.dy;
     }
 
+    pub fn draw(&mut self) {
+        let mut original = Vec::new();
+            let mut res = Vec::new();
+            original.push(Vec2{x: self.x + self.width, y: self.y + self.height / 2.0});
+            original.push(Vec2{x: self.x, y: self.y});
+            original.push(Vec2{x: self.x, y: self.y + self.height});
+
+            let cx = self.x + self.width / 2.0;
+            let cy = self.y + self.height / 2.0;
+
+            let alpha = self.dy.atan2(self.dx);
+            
+            for point in original.iter_mut() {
+                let xp = point.x - cx;
+                let yp = point.y - cy;
+                let xpp = xp * alpha.cos() - yp * alpha.sin();
+                let ypp = xp * alpha.sin() + yp * alpha.cos();
+                res.push(Vec2{x: xpp + cx, y: ypp + cy});
+            }
+
+            draw_triangle(res[0], res[1], res[2], self.color);
+    }
+
     
 }
 
@@ -59,8 +80,7 @@ async fn main(){
 
         for boid in boids.iter_mut() {
             boid.update();
-            draw_rectangle(boid.x, boid.y, boid.width, boid.height, boid.color);
-
+            boid.draw();
         }
 
         next_frame().await
