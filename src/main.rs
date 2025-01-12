@@ -15,8 +15,8 @@ const RIGHT_MARGIN : f32 = CANVAS_WIDTH as f32 - MARGIN * BOID_WIDTH;
 const TOP_MARGIN : f32 = MARGIN * BOID_WIDTH;
 const BOTTOM_MARGIN : f32 = CANVAS_HEIGHT as f32 - MARGIN * BOID_WIDTH;
 const TURNING_FACTOR : f32 = 0.25;
-const MIN_SPEED : f32 = 2.0;
-const MAX_SPEED : f32 = 6.0;
+// const MIN_SPEED : f32 = 2.0;
+const SPEED : f32 = 3.0;
 const SEGMENT_WIDTH : u32 = 25;
 const VISUAL_RANGE : f32 = 60.0;
 const SPACE_RANGE : f32 = 10.0;
@@ -77,8 +77,8 @@ impl Boid {
 
         let mut others : u32 = 0;
 
-        for i in (min_seg_x..=max_seg_x) {
-            for j in (min_seg_y..=max_seg_y) {
+        for i in min_seg_x..=max_seg_x {
+            for j in min_seg_y..=max_seg_y {
                 for point in segments.get(&Segment{x: i, y: j}).unwrap_or(&Vec::new()) {
                     let dx = self.x - point.x;
                     let dy = self.y - point.y;
@@ -122,15 +122,15 @@ impl Boid {
         if self.y + self.dy < TOP_MARGIN && self.dy < 0.0 {self.dy = self.dy + TURNING_FACTOR;}
 
         let speed = (self.dx.powi(2) + self.dy.powi(2)).sqrt();
-        if speed > MAX_SPEED {
-            self.dx = (self.dx / speed) * MAX_SPEED;
-            self.dy = (self.dy / speed) * MAX_SPEED;
-        }
 
-        if speed < MIN_SPEED {
-            self.dx = (self.dx / speed) * MIN_SPEED;
-            self.dy = (self.dy / speed) * MIN_SPEED;
-        }
+        self.dx = (self.dx / speed) * SPEED;
+        self.dy = (self.dy / speed) * SPEED;
+
+
+        // if speed < MIN_SPEED {
+        //     self.dx = (self.dx / speed) * MIN_SPEED;
+        //     self.dy = (self.dy / speed) * MIN_SPEED;
+        // }
 
         self.x += self.dx;
         self.y += self.dy;
