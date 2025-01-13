@@ -8,21 +8,24 @@ use ::rand::*;
 const CANVAS_WIDTH : u32 = 1400;
 const CANVAS_HEIGHT : u32 = 700;
 const NUMBER_BOIDS : u32 = 1000;
+const NUMBER_SQUARE_OBSTACLES: u32 = 35;
 const BOID_WIDTH : f32 = 5.0;
 const MARGIN : f32 = 25.0;
+const OBSTACLE_MARGIN: f32 = 10.0;
 const LEFT_MARGIN : f32 = MARGIN * BOID_WIDTH;
 const RIGHT_MARGIN : f32 = CANVAS_WIDTH as f32 - MARGIN * BOID_WIDTH;
 const TOP_MARGIN : f32 = MARGIN * BOID_WIDTH;
 const BOTTOM_MARGIN : f32 = CANVAS_HEIGHT as f32 - MARGIN * BOID_WIDTH;
 const TURNING_FACTOR : f32 = 0.25;
-// const MIN_SPEED : f32 = 2.0;
 const SPEED : f32 = 3.0;
 const SEGMENT_WIDTH : u32 = 25;
-const VISUAL_RANGE : f32 = 60.0;
+const VISUAL_RANGE : f32 = 40.0;
 const SPACE_RANGE : f32 = 10.0;
 const CENTERING : f32 = 0.0005;
 const AVOID : f32 = 0.05;
 const MATCHING : f32 = 0.05;
+const OBSTACLE_MIN_RADIUS: f32 = 10.0;
+const OBSTACLE_MAX_RADIUS: f32 = 25.0;
 
 
 
@@ -49,20 +52,59 @@ struct BoidPosVel {
     dy: f32
 }
 
+struct Obstacle {
+    x: f32,
+    y: f32,
+    radius: f32
+}
+
+impl Obstacle {
+
+    pub fn create() -> Obstacle {
+        let w = thread_rng().gen_range(OBSTACLE_MIN_RADIUS..OBSTACLE_MAX_RADIUS);
+        Obstacle {
+            x: thread_rng().gen_range(CANVAS_WIDTH as f32 / 5.0..4.0 * CANVAS_WIDTH as f32 / 5.0),
+            y: thread_rng().gen_range(CANVAS_HEIGHT as f32 / 5.0..4.0 * CANVAS_HEIGHT as f32 / 5.0),
+            radius: w
+        }
+    }
+
+    pub fn create_spec(x: f32, y: f32, radius: f32) -> Obstacle {
+        Obstacle {
+            x: x,
+            y: y,
+            radius: radius
+        }
+    }
+
+    pub fn margins(&self, point: &Boid) -> Option<f32> {
+        let dist_center = ((point.x + point.width / 2.0 - self.x).powi(2) + (point.y + point.width / 2.0 - self.y).powi(2)).sqrt();
+        if dist_center < self.radius + VISUAL_RANGE {
+            return Some(dist_center - self.radius);
+        }
+
+        return None;
+    }
+
+    pub fn draw(&self) {
+        draw_circle(self.x, self.y, self.radius, BLACK);
+    }
+}
+
 impl Boid {
     pub fn create() -> Boid {
         Boid {
-            x: random::<f32>() * CANVAS_WIDTH as f32 - 20.0,
-            y: random::<f32>() * CANVAS_HEIGHT as f32 - 20.0,
+            x: thread_rng().gen_range(CANVAS_WIDTH as f32 / 5.0..4.0 * CANVAS_WIDTH as f32 / 5.0),
+            y: thread_rng().gen_range(CANVAS_HEIGHT as f32 / 5.0..4.0 * CANVAS_HEIGHT as f32 / 5.0),
             width: BOID_WIDTH,
             height: BOID_WIDTH,
-            dx: random::<f32>() * 5.0 - 2.5,
-            dy: random::<f32>() * 5.0 - 2.5,
+            dx: thread_rng().gen_range(-2.5..=2.5),
+            dy: thread_rng().gen_range(-2.5..=2.5),
             color : RED
         }
     }
 
-    pub fn update(&mut self, segments: &HashMap<Segment, Vec<BoidPosVel>>) -> Segment {
+    pub fn update(&mut self, segments: &HashMap<Segment, Vec<BoidPosVel>>, obstacles: &Vec<Obstacle>) -> Segment {
         let min_seg_x = ((self.x - VISUAL_RANGE).max(0.0) as u32).div(SEGMENT_WIDTH);
         let max_seg_x = ((self.x + VISUAL_RANGE).min(CANVAS_WIDTH as f32) as u32).div(SEGMENT_WIDTH);
         let min_seg_y = ((self.y - VISUAL_RANGE).max(0.0) as u32).div(SEGMENT_WIDTH);
@@ -114,23 +156,31 @@ impl Boid {
         self.dy += avoid_dy * AVOID;
 
 
+        if self.x + self.dx + self.width > RIGHT_MARGIN && self.dx > 0.0 {self.dx -= TURNING_FACTOR;}
+        if self.y + self.dy + self.height > BOTTOM_MARGIN && self.dy > 0.0 {self.dy -= TURNING_FACTOR;}
+        if self.x + self.dx < LEFT_MARGIN && self.dx < 0.0 {self.dx += TURNING_FACTOR;}
+        if self.y + self.dy < TOP_MARGIN && self.dy < 0.0 {self.dy += TURNING_FACTOR;}
 
+        for obs in obstacles.iter() {
 
-        if self.x + self.dx + self.width > RIGHT_MARGIN && self.dx > 0.0 {self.dx = self.dx - TURNING_FACTOR;}
-        if self.y + self.dy + self.height > BOTTOM_MARGIN && self.dy > 0.0 {self.dy = self.dy - TURNING_FACTOR;}
-        if self.x + self.dx < LEFT_MARGIN && self.dx < 0.0 {self.dx = self.dx + TURNING_FACTOR;}
-        if self.y + self.dy < TOP_MARGIN && self.dy < 0.0 {self.dy = self.dy + TURNING_FACTOR;}
+            let margins = obs.margins(&self);
+            
+            if margins.is_none() {continue;}
+            let result = margins.unwrap();
+            if result < OBSTACLE_MARGIN {
+                self.dx = -1.0 * (obs.x - self.x);
+                self.dy = -1.0 * (obs.y - self.y);
+            } else {
+                self.dx += -1.0 * (obs.x - self.x) * AVOID * TURNING_FACTOR;
+                self.dy += -1.0 * (obs.y - self.y) * AVOID * TURNING_FACTOR;
+            }
+
+        }
 
         let speed = (self.dx.powi(2) + self.dy.powi(2)).sqrt();
 
         self.dx = (self.dx / speed) * SPEED;
         self.dy = (self.dy / speed) * SPEED;
-
-
-        // if speed < MIN_SPEED {
-        //     self.dx = (self.dx / speed) * MIN_SPEED;
-        //     self.dy = (self.dy / speed) * MIN_SPEED;
-        // }
 
         self.x += self.dx;
         self.y += self.dy;
@@ -139,6 +189,7 @@ impl Boid {
         if self.y + self.height > CANVAS_HEIGHT as f32 {self.y = CANVAS_HEIGHT as f32 - self.height - 1.0;}
         if self.x < 0.0 {self.x = 1.0;}
         if self.y < 0.0 {self.y = 1.0;}
+
 
         Segment{x: (self.x as u32).div(SEGMENT_WIDTH), y: (self.y as u32).div(SEGMENT_WIDTH)}
     }
@@ -176,6 +227,8 @@ async fn main(){
 
     let mut boids = (0..NUMBER_BOIDS).into_iter().map(|_| Boid::create()).collect::<Vec<_>>();
 
+    let obstacles = (0..NUMBER_SQUARE_OBSTACLES).into_iter().map(|_| Obstacle::create()).collect::<Vec<_>>();
+
     let mut prev_pos_segments : HashMap<Segment, Vec<BoidPosVel>> = HashMap::new();
 
     for boid in boids.iter() {
@@ -190,10 +243,14 @@ async fn main(){
         let mut pos_segments : HashMap<Segment, Vec<BoidPosVel>> = HashMap::new();
 
         for boid in boids.iter_mut() {
-            pos_segments.entry(boid.update(&prev_pos_segments))
+            pos_segments.entry(boid.update(&prev_pos_segments, &obstacles))
                 .or_insert_with(Vec::new)
                 .push(BoidPosVel{x: boid.x, y: boid.y, dx: boid.dx, dy: boid.dy});
             boid.draw();
+        }
+
+        for obs in obstacles.iter() {
+            obs.draw();
         }
 
         prev_pos_segments = pos_segments;
