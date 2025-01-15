@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ops::Div};
+use std::{collections::HashMap, fs::{File, OpenOptions}, io::{Read, Write}, ops::Div, path::Path, time::SystemTime};
 
 use macroquad::prelude::*;
 
@@ -9,7 +9,7 @@ use rand_distr::{Normal, Distribution};
 
 const CANVAS_WIDTH : u32 = 1400;
 const CANVAS_HEIGHT : u32 = 700;
-const NUMBER_BOIDS : u32 = 1000;
+const NUMBER_BOIDS : u32 = 100;
 const NUMBER_SQUARE_OBSTACLES: u32 = 35;
 const BOID_WIDTH : f32 = 5.0;
 const MARGIN : f32 = 25.0;
@@ -262,16 +262,45 @@ async fn main(){
             .push(BoidPosVel{x: boid.x, y: boid.y, dx: boid.dx, dy: boid.dy});
     }
 
+    let begin_time = SystemTime::now();
+    let mut last_time = begin_time;
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open("visualizer/data.csv")
+        .expect("Unable to open file");
+
+    writeln!(file, "Timestamp;Data")
+        .expect("Something went wrong.");
+
     loop {
+        // logging
+        let current_time = begin_time.elapsed().unwrap().as_secs_f32() - last_time.elapsed().unwrap().as_secs_f32();
+        last_time = SystemTime::now();
+
+        let mut contents = String::new();
+        contents += format!("{};[", current_time).as_str();
+
+        let mut differences = Vec::new();
+
+        // updating & drawing
+
         clear_background(WHITE);
 
         let mut pos_segments : HashMap<Segment, Vec<BoidPosVel>> = HashMap::new();
-
+        
         for boid in boids.iter_mut() {
             pos_segments.entry(boid.update(&prev_pos_segments, &obstacles, &normal_dist_speed))
                 .or_insert_with(Vec::new)
                 .push(BoidPosVel{x: boid.x, y: boid.y, dx: boid.dx, dy: boid.dy});
             boid.draw();
+
+            // log position
+            differences.push(boid.x - boid.xz);
+            differences.push(boid.y - boid.yz);
+            
         }
 
         for obs in obstacles.iter() {
@@ -279,6 +308,16 @@ async fn main(){
         }
 
         prev_pos_segments = pos_segments;
+
+        // logging
+        for i in (0..differences.len()).step_by(2) {
+            contents += format!("[{}, {}],", differences[i], differences[i+1]).as_str();
+        }
+        contents.pop();
+        contents += "]";
+
+        writeln!(file, "{}", contents)
+            .expect("Something went wrong");
 
         next_frame().await
     }
