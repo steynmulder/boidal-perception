@@ -118,8 +118,8 @@ impl Boid {
             theta_est: 0.0,
             width: BOID_WIDTH,
             height: BOID_WIDTH,
-            dx: thread_rng().gen_range(-2.5..=2.5),
-            dy: thread_rng().gen_range(-2.5..=2.5),
+            dx: SPEED,
+            dy: 0.0,
             color : RED
         }
     }
@@ -255,10 +255,19 @@ impl Boid {
                 self.trilateration(&anchors, &anchor_measurements, &mut H, &mut Z, &mut C, &i, &l, &number_anchors);
             }
 
-            let x_ls = (&H.transpose() * &C.clone_owned().try_inverse().unwrap() * &H).try_inverse().unwrap() * &H.transpose() * &C.try_inverse().unwrap() * &Z; // H and C are changed here, should not matter
+            let P = (&H.transpose() * &C.clone_owned().try_inverse().unwrap() * &H).try_inverse();
+            let C_inv = C.try_inverse();
+            if P.is_none() || C_inv.is_none() {
+                let speed = (self.dx.powi(2) + self.dy.powi(2)).sqrt();
 
-            self.x_est = x_ls[0];
-            self.y_est = x_ls[1];
+                self.x_est += (self.dx / speed) * SPEED;
+                self.y_est += (self.dy / speed) * SPEED;
+            } else {
+                let x_ls = P.unwrap() * &H.transpose() * C_inv.unwrap() * &Z;
+                self.x_est = x_ls[0];
+                self.y_est = x_ls[1];
+            }
+            
 
         } else {
             // noisy movement with ideal speed actuation
