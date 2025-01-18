@@ -33,7 +33,7 @@ const MATCHING : f32 = 0.05;
 const OBSTACLE_MIN_RADIUS: f32 = 5.0;
 const OBSTACLE_MAX_RADIUS: f32 = 10.0;
 
-const NUMBER_MEASUREMENTS_CYCLE: usize = 2;
+const NUMBER_MEASUREMENTS_CYCLE: usize = 1;
 
 const SPEED_STD: f32 = 0.1;
 const ANCHOR_STD: f32 = 0.1;
@@ -113,8 +113,8 @@ impl Boid {
             x: x,
             y: y,
             theta: 0.0,
-            x_est: 0.0,
-            y_est: 0.0,
+            x_est: x,
+            y_est: y,
             theta_est: 0.0,
             width: BOID_WIDTH,
             height: BOID_WIDTH,
