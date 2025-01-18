@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fs::{File, OpenOptions}, io::{Read, Write}, ops::Div, path::Path, time::SystemTime};
 
-use nalgebra::{DMatrix, DVector};
+use nalgebra::{DMatrix, DVector, Matrix};
 
 use macroquad::prelude::*;
 
@@ -9,11 +9,13 @@ use miniquad::window::set_window_size;
 use ::rand::*;
 use rand_distr::{Normal, Distribution};
 
+enum positioning{WLS, EKF}
+
 const MINIMUM_FRAME_TIME: f32 = 1. / 30.;
 const CANVAS_WIDTH : u32 = 750;
 const CANVAS_HEIGHT : u32 = 450;
-const NUMBER_BOIDS : u32 = 50;
-const NUMBER_OBSTACLES: u32 = 50;
+const NUMBER_BOIDS : u32 = 100;
+const NUMBER_OBSTACLES: u32 = 100;
 const BOID_WIDTH : f32 = 5.0;
 const MARGIN : f32 = 25.0;
 const OBSTACLE_MARGIN: f32 = 10.0;
@@ -38,6 +40,8 @@ const NUMBER_MEASUREMENTS_CYCLE: usize = 1;
 const SPEED_STD: f32 = 0.1;
 const ANCHOR_STD: f32 = 0.1;
 
+const SIM_POSITIONING: positioning = positioning::EKF;
+
 
 struct Boid {
     x: f32, // actual x
@@ -50,7 +54,8 @@ struct Boid {
     height: f32,
     dx: f32,
     dy: f32,
-    color : Color
+    color : Color,
+    initial: bool
 }
 
 #[derive(Eq, Hash, PartialEq)]
@@ -120,7 +125,8 @@ impl Boid {
             height: BOID_WIDTH,
             dx: SPEED,
             dy: 0.0,
-            color : RED
+            color : RED,
+            initial: true
         }
     }
 
@@ -246,27 +252,76 @@ impl Boid {
 
             let anchor_measurements: DMatrix<f32> = DMatrix::from_row_slice(NUMBER_MEASUREMENTS_CYCLE, number_anchors, &noisy_distances);
             
-            let mut H: DMatrix<f32> = DMatrix::zeros((number_anchors - 1) * NUMBER_MEASUREMENTS_CYCLE, 2);
-            let mut Z: DMatrix<f32> = DMatrix::zeros((number_anchors - 1) * NUMBER_MEASUREMENTS_CYCLE, 1);
-            let mut C: DMatrix<f32> = DMatrix::zeros((number_anchors - 1) * NUMBER_MEASUREMENTS_CYCLE, (number_anchors - 1) * NUMBER_MEASUREMENTS_CYCLE);
+            let mut h: DMatrix<f32> = DMatrix::zeros((number_anchors - 1) * NUMBER_MEASUREMENTS_CYCLE, 2);
+            let mut z: DMatrix<f32> = DMatrix::zeros((number_anchors - 1) * NUMBER_MEASUREMENTS_CYCLE, 1);
+            let mut c: DMatrix<f32> = DMatrix::zeros((number_anchors - 1) * NUMBER_MEASUREMENTS_CYCLE, (number_anchors - 1) * NUMBER_MEASUREMENTS_CYCLE);
 
             for i in 0..NUMBER_MEASUREMENTS_CYCLE {
                 let l = i * (number_anchors - 1);
-                self.trilateration(&anchors, &anchor_measurements, &mut H, &mut Z, &mut C, &i, &l, &number_anchors);
+                self.trilateration(&anchors, &anchor_measurements, &mut h, &mut z, &mut c, &i, &l, &number_anchors);
             }
 
-            let P = (&H.transpose() * &C.clone_owned().try_inverse().unwrap() * &H).try_inverse();
-            let C_inv = C.try_inverse();
-            if P.is_none() || C_inv.is_none() {
+            let p = (&h.transpose() * &c.clone_owned().try_inverse().unwrap() * &h).try_inverse();
+            let c_inv = c.clone().try_inverse();
+            if p.is_none() || c_inv.is_none() {
                 let speed = (self.dx.powi(2) + self.dy.powi(2)).sqrt();
 
                 self.x_est += (self.dx / speed) * SPEED;
                 self.y_est += (self.dy / speed) * SPEED;
+                self.theta_est = self.dy.atan2(self.dx);
             } else {
-                let x_ls = P.unwrap() * &H.transpose() * C_inv.unwrap() * &Z;
-                self.x_est = x_ls[0];
-                self.y_est = x_ls[1];
+                match SIM_POSITIONING {
+                    positioning::WLS => {
+                        let x_ls = &p.clone().unwrap() * &h.transpose() * c_inv.unwrap() * &z;
+                        self.x_est = x_ls[0];
+                        self.y_est = x_ls[1];
+                        self.theta_est = self.dy.atan2(self.dx);
+                    },
+                    positioning::EKF => {
+                        if self.initial {
+                            self.initial = false;
+                            let x_ls = &p.clone().unwrap() * &h.transpose() * c_inv.unwrap() * &z;
+                            self.x_est = x_ls[0];
+                            self.y_est = x_ls[1];
+                            self.theta_est = self.dy.atan2(self.dx);
+                        } else {
+                            let mut p_vals = p.clone().unwrap().insert_columns(2, 1, 0.0).insert_rows(2, 1, 0.0);
+                            p_vals[(2,2)] = ANCHOR_STD;
+
+                            // predication
+                            let x_pred = self.dynamic(self.dy.atan2(self.dx) - self.theta_est);
+                            let a_c = DMatrix::from_row_slice(3, 3, &[1., 0., -SPEED * self.theta_est.sin() * MINIMUM_FRAME_TIME,
+                                                                                                                     0., 1., SPEED * self.theta_est.cos() * MINIMUM_FRAME_TIME,
+                                                                                                                     0., 0., 1.]);
+                            let p_pred = &a_c * &p_vals * &a_c.transpose();
+
+                            // update
+                            let h_pad = h.insert_column(2, 0.); //todo check if correct column
+                            let k_1 = &p_pred * &h_pad.transpose();
+                            let k_2 = (&h_pad * &p_pred * &h_pad.transpose() + &c).try_inverse();
+                            if k_2.is_none() {
+                                println!("Something went wrong");
+                                let speed = (self.dx.powi(2) + self.dy.powi(2)).sqrt();
+
+                                self.x_est += (self.dx / speed) * SPEED;
+                                self.y_est += (self.dy / speed) * SPEED;
+                                self.theta_est = self.dy.atan2(self.dx);
+                            } else {
+                                let k = k_1 * k_2.unwrap();
+                                let x_next = &x_pred + &k * (&z - &h_pad * &x_pred);
+                                let p_next = (DMatrix::identity(3, 3) - &k * &h_pad) * &p_pred * (DMatrix::identity(3, 3) - &k * &h_pad).transpose() + &k * &c * &k.transpose(); 
+
+                                self.x_est = x_next[(0, 0)];
+                                self.y_est = x_next[(1, 0)];
+                                self.theta_est = x_next[(2, 0)];
+                            }
+                            
+                        }
+                    }
+                }
             }
+            
+           
             
 
         } else {
@@ -275,10 +330,12 @@ impl Boid {
 
             self.x_est += (self.dx / speed) * SPEED;
             self.y_est += (self.dy / speed) * SPEED;
+
+            // estimated angle with ideal speed actuation
+            self.theta_est = self.dy.atan2(self.dx);
         }
 
-        // estimated angle with ideal speed actuation
-        self.theta_est = self.dy.atan2(self.dx);
+        
 
         // actual movement with noise in speed actuation
 
@@ -360,6 +417,14 @@ impl Boid {
                         }
                      }
 
+    fn dynamic(&mut self, omega: f32) -> DMatrix<f32> {
+        let mut state= DMatrix::zeros(3, 1);
+        state[(0, 0)] = self.x_est + SPEED * self.theta_est.cos() * MINIMUM_FRAME_TIME;
+        state[(1, 0)] = self.y_est + SPEED * self.theta_est.sin() * MINIMUM_FRAME_TIME;
+        state[(2, 0)] = self.theta_est + omega * MINIMUM_FRAME_TIME;
+        state
+    }
+
     
 }
 
@@ -414,7 +479,7 @@ async fn main(){
 
         // updating & drawing
 
-        clear_background(WHITE);
+        clear_background(Color { r: 180./255., g: 231./255., b: 237./255., a: 1.0 });
 
         let mut pos_segments : HashMap<Segment, Vec<BoidPosVel>> = HashMap::new();
         
