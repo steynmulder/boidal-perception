@@ -1,5 +1,7 @@
 use std::{collections::HashMap, fs::{File, OpenOptions}, io::{Read, Write}, ops::Div, path::Path, time::SystemTime};
 
+use nalgebra::{DMatrix, DVector};
+
 use macroquad::prelude::*;
 
 use miniquad::window::set_window_size;
@@ -7,27 +9,33 @@ use miniquad::window::set_window_size;
 use ::rand::*;
 use rand_distr::{Normal, Distribution};
 
-const CANVAS_WIDTH : u32 = 1400;
-const CANVAS_HEIGHT : u32 = 700;
-const NUMBER_BOIDS : u32 = 100;
-const NUMBER_SQUARE_OBSTACLES: u32 = 35;
+const CANVAS_WIDTH : u32 = 500;
+const CANVAS_HEIGHT : u32 = 250;
+const NUMBER_BOIDS : u32 = 50;
+const NUMBER_OBSTACLES: u32 = 25;
 const BOID_WIDTH : f32 = 5.0;
 const MARGIN : f32 = 25.0;
 const OBSTACLE_MARGIN: f32 = 10.0;
-const LEFT_MARGIN : f32 = MARGIN * BOID_WIDTH;
-const RIGHT_MARGIN : f32 = CANVAS_WIDTH as f32 - MARGIN * BOID_WIDTH;
-const TOP_MARGIN : f32 = MARGIN * BOID_WIDTH;
-const BOTTOM_MARGIN : f32 = CANVAS_HEIGHT as f32 - MARGIN * BOID_WIDTH;
+const LEFT_MARGIN : f32 = 50.0;
+const RIGHT_MARGIN : f32 = CANVAS_WIDTH as f32 - 50.0;
+const TOP_MARGIN : f32 = 50.0;
+const BOTTOM_MARGIN : f32 = CANVAS_HEIGHT as f32 - 50.0;
 const TURNING_FACTOR : f32 = 0.25;
 const SPEED : f32 = 3.0;
 const SEGMENT_WIDTH : u32 = 25;
 const VISUAL_RANGE : f32 = 40.0;
+const ANCHOR_VISUAL_RANGE: f32 = 120.0;
 const SPACE_RANGE : f32 = 10.0;
 const CENTERING : f32 = 0.0005;
 const AVOID : f32 = 0.05;
 const MATCHING : f32 = 0.05;
-const OBSTACLE_MIN_RADIUS: f32 = 10.0;
-const OBSTACLE_MAX_RADIUS: f32 = 25.0;
+const OBSTACLE_MIN_RADIUS: f32 = 5.0;
+const OBSTACLE_MAX_RADIUS: f32 = 10.0;
+
+const NUMBER_MEASUREMENTS_CYCLE: usize = 2;
+
+const SPEED_STD: f32 = 0.1;
+const ANCHOR_STD: f32 = 0.1;
 
 
 struct Boid {
@@ -66,8 +74,8 @@ impl Obstacle {
     pub fn create() -> Obstacle {
         let w = thread_rng().gen_range(OBSTACLE_MIN_RADIUS..OBSTACLE_MAX_RADIUS);
         Obstacle {
-            x: thread_rng().gen_range(CANVAS_WIDTH as f32 / 5.0..4.0 * CANVAS_WIDTH as f32 / 5.0),
-            y: thread_rng().gen_range(CANVAS_HEIGHT as f32 / 5.0..4.0 * CANVAS_HEIGHT as f32 / 5.0),
+            x: thread_rng().gen_range(0.0..CANVAS_WIDTH as f32),
+            y: thread_rng().gen_range(0.0..CANVAS_HEIGHT as f32),
             radius: w
         }
     }
@@ -101,8 +109,8 @@ impl Boid {
         Boid {
             x: x,
             y: y,
-            xz: x,
-            yz: y,
+            xz: 0.0,
+            yz: 0.0,
             width: BOID_WIDTH,
             height: BOID_WIDTH,
             dx: thread_rng().gen_range(-2.5..=2.5),
@@ -111,7 +119,12 @@ impl Boid {
         }
     }
 
-    pub fn update(&mut self, segments: &HashMap<Segment, Vec<BoidPosVel>>, obstacles: &Vec<Obstacle>, normal_dist_speed: &Normal<f32>) -> Segment {
+    pub fn update(&mut self,
+                  segments: &HashMap<Segment,
+                  Vec<BoidPosVel>>, 
+                  obstacles: &Vec<Obstacle>, 
+                  normal_dist_speed: &Normal<f32>,
+                  normal_dist_anchors: &Normal<f32>) -> Segment {
         // optimization of checks: use actual coordinates
         let min_seg_x = ((self.x - VISUAL_RANGE).max(0.0) as u32).div(SEGMENT_WIDTH);
         let max_seg_x = ((self.x + VISUAL_RANGE).min(CANVAS_WIDTH as f32) as u32).div(SEGMENT_WIDTH);
@@ -170,28 +183,73 @@ impl Boid {
         if self.xz + self.dx < LEFT_MARGIN && self.dx < 0.0 {self.dx += TURNING_FACTOR;}
         if self.yz + self.dy < TOP_MARGIN && self.dy < 0.0 {self.dy += TURNING_FACTOR;}
 
+        let mut true_distances_anchors = Vec::new();
+        let mut number_anchors: usize = 0;
+        let mut anchors = Vec::new();
+
+        // println!("{}", obstacles.len());
+
         for obs in obstacles.iter() {
 
             let margins = obs.margins(&self);
             
-            if margins.is_none() {continue;}
-            let result = margins.unwrap();
-            if result < OBSTACLE_MARGIN {
-                // use noisy coordinates
-                self.dx = -1.0 * (obs.x - self.xz);
-                self.dy = -1.0 * (obs.y - self.yz);
-            } else {
-                self.dx += -1.0 * (obs.x - self.xz) * AVOID * TURNING_FACTOR; // TODO switch this up with first?
-                self.dy += -1.0 * (obs.y - self.yz) * AVOID * TURNING_FACTOR;
+            if let Some(result) = margins {
+                if result < OBSTACLE_MARGIN {
+                    // use noisy coordinates
+                    self.dx = -1.0 * (obs.x - self.xz);
+                    self.dy = -1.0 * (obs.y - self.yz);
+                } else {
+                    self.dx += -1.0 * (obs.x - self.xz) * AVOID * TURNING_FACTOR; // TODO switch this up with first?
+                    self.dy += -1.0 * (obs.y - self.yz) * AVOID * TURNING_FACTOR;
+                }
+
+            }
+
+            let distance = ((obs.x - self.x).powi(2) + (obs.y - self.y).powi(2)).sqrt();
+
+            if distance < ANCHOR_VISUAL_RANGE {
+                number_anchors += 1;
+                true_distances_anchors.push(distance);
+                anchors.push(obs);
             }
 
         }
 
+        if number_anchors > 2 {
+            let mut noisy_distances = Vec::new();
+
+            for _i in 0..NUMBER_MEASUREMENTS_CYCLE {
+                for distance in true_distances_anchors.clone().into_iter() {
+                    noisy_distances.push(distance);//+ normal_dist_anchors.sample(&mut thread_rng()));
+                }
+            }
+
+            let anchor_measurements: DMatrix<f32> = DMatrix::from_row_slice(NUMBER_MEASUREMENTS_CYCLE, number_anchors, &noisy_distances);
+            
+            let mut H: DMatrix<f32> = DMatrix::zeros((number_anchors - 1) * NUMBER_MEASUREMENTS_CYCLE, 2);
+            let mut Z: DMatrix<f32> = DMatrix::zeros((number_anchors - 1) * NUMBER_MEASUREMENTS_CYCLE, 1);
+            let mut C: DMatrix<f32> = DMatrix::zeros((number_anchors - 1) * NUMBER_MEASUREMENTS_CYCLE, (number_anchors - 1) * NUMBER_MEASUREMENTS_CYCLE);
+
+            for i in 0..NUMBER_MEASUREMENTS_CYCLE {
+                let l = i * (number_anchors - 1);
+                self.trilateration(&anchors, &anchor_measurements, &mut H, &mut Z, &mut C, &i, &l, &number_anchors);
+            }
+
+            // let P = ;
+            // let P_prime = (P.clone().transpose() * P.clone()) * P.clone().transpose();
+            let x_ls = (&H.transpose() * &C.clone_owned().try_inverse().unwrap() * &H).try_inverse().unwrap() * &H.transpose() * &C.try_inverse().unwrap() * &Z; // H and C are changed here, should not matter
+
+            self.xz = x_ls[0];
+            self.yz = x_ls[1];
+        }
+
+        
+
         // noisy movement with ideal speed actuation
         let speed = (self.dx.powi(2) + self.dy.powi(2)).sqrt();
 
-        self.xz += (self.dx / speed) * SPEED;
-        self.yz += (self.dy / speed) * SPEED;
+        // self.xz += (self.dx / speed) * SPEED;
+        // self.yz += (self.dy / speed) * SPEED;
 
         // actual movement with noise in speed actuation
 
@@ -241,6 +299,38 @@ impl Boid {
             draw_triangle(res[0], res[1], res[2], self.color);
     }
 
+    fn trilateration(&mut self,
+                     anchors: &Vec<&Obstacle>,
+                     anchor_measurements: &DMatrix<f32>, 
+                     H: &mut DMatrix<f32>, 
+                     Z: &mut DMatrix<f32>, 
+                     C: &mut DMatrix<f32>, 
+                     i: &usize, 
+                     l: &usize,
+                     number_anchors: &usize) {
+                        for j in 0..number_anchors-1 {
+                            H[(l + j, 0)] = 2.0 * (anchors[j+1].x - anchors[j].x);
+                            H[(l + j, 1)] = 2.0 * (anchors[j+1].y - anchors[j].y);
+                            Z[l + j] = -(anchor_measurements[(*i, j+1)]).powi(2) + (anchor_measurements[(*i, j)]).powi(2) 
+                                        + anchors[j+1].x.powi(2) - anchors[j].x.powi(2) + anchors[j+1].y.powi(2) - anchors[j].y.powi(2);
+                            
+                            if j == 0 {
+                                C[(l + j, l + j)] = 4.0 * ANCHOR_STD.powi(2) * (anchor_measurements[(*i, j+1)].powi(2) + anchor_measurements[(*i, j)].powi(2));
+                                if *number_anchors > 2 {
+                                    C[(l + j, l + j + 1)] = -4.0 * ANCHOR_STD.powi(2) * anchor_measurements[(*i, j+1)].powi(2);
+                                }
+                            } else if j < *number_anchors - 2 {
+                                C[(l + j, l + j - 1)] =  -4.0 * ANCHOR_STD.powi(2) * anchor_measurements[(*i, j)].powi(2);
+                                C[(l + j, l + j)] = 4.0 * ANCHOR_STD.powi(2) * (anchor_measurements[(*i, j+1)].powi(2) + anchor_measurements[(*i, j)].powi(2));
+                                C[(l + j, l + j + 1)] =  -4.0 * ANCHOR_STD.powi(2) * anchor_measurements[(*i, j+1)].powi(2);
+                            } else {
+                                C[(l + j, l + j - 1)] =  -4.0 * ANCHOR_STD.powi(2) * anchor_measurements[(*i, j)].powi(2);
+                                C[(l + j, l + j)] = 4.0 * ANCHOR_STD.powi(2) * (anchor_measurements[(*i, j+1)].powi(2) + anchor_measurements[(*i, j)].powi(2));
+                            }
+
+                        }
+                     }
+
     
 }
 
@@ -250,9 +340,10 @@ async fn main(){
     set_window_size(CANVAS_WIDTH, CANVAS_HEIGHT);
 
     let mut boids = (0..NUMBER_BOIDS).into_iter().map(|_| Boid::create()).collect::<Vec<_>>();
-    let obstacles = (0..NUMBER_SQUARE_OBSTACLES).into_iter().map(|_| Obstacle::create()).collect::<Vec<_>>();
+    let obstacles = (0..NUMBER_OBSTACLES).into_iter().map(|_| Obstacle::create()).collect::<Vec<_>>();
 
-    let normal_dist_speed= Normal::new(0.0, SPEED / 3.0).unwrap();
+    let normal_dist_speed= Normal::new(0.0, SPEED_STD).unwrap();
+    let normal_dist_anchors= Normal::new(0.0, ANCHOR_STD).unwrap();
 
     let mut prev_pos_segments : HashMap<Segment, Vec<BoidPosVel>> = HashMap::new();
 
@@ -292,7 +383,7 @@ async fn main(){
         let mut pos_segments : HashMap<Segment, Vec<BoidPosVel>> = HashMap::new();
         
         for boid in boids.iter_mut() {
-            pos_segments.entry(boid.update(&prev_pos_segments, &obstacles, &normal_dist_speed))
+            pos_segments.entry(boid.update(&prev_pos_segments, &obstacles, &normal_dist_speed, &normal_dist_anchors))
                 .or_insert_with(Vec::new)
                 .push(BoidPosVel{x: boid.x, y: boid.y, dx: boid.dx, dy: boid.dy});
             boid.draw();
