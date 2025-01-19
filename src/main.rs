@@ -14,8 +14,8 @@ enum positioning{WLS, EKF}
 const MINIMUM_FRAME_TIME: f32 = 1. / 30.;
 const CANVAS_WIDTH : u32 = 750;
 const CANVAS_HEIGHT : u32 = 450;
-const NUMBER_BOIDS : u32 = 100;
-const NUMBER_OBSTACLES: u32 = 100;
+const NUMBER_BOIDS : u32 = 200;
+const NUMBER_OBSTACLES: u32 = 50;
 const BOID_WIDTH : f32 = 5.0;
 const MARGIN : f32 = 25.0;
 const OBSTACLE_MARGIN: f32 = 10.0;
@@ -28,12 +28,17 @@ const SPEED : f32 = 2.0;
 const SEGMENT_WIDTH : u32 = 25;
 const VISUAL_RANGE : f32 = 40.0;
 const ANCHOR_VISUAL_RANGE: f32 = 80.0;
+const ESCAPE_VISUAL_RANGE: f32 = 15.0;
+const ESCAPING_BOIDS_VISUAL_RANGE: f32 = 50.0;
 const SPACE_RANGE : f32 = 10.0;
 const CENTERING : f32 = 0.0005;
-const AVOID : f32 = 0.025;
+const AVOID : f32 = 0.01;
 const MATCHING : f32 = 0.05;
-const OBSTACLE_MIN_RADIUS: f32 = 5.0;
-const OBSTACLE_MAX_RADIUS: f32 = 10.0;
+const ESCAPE_FACTOR: f32 = 1.0;
+const FOLLOW_ESCAPE: f32 = 0.05;
+const OBSTACLE_MIN_RADIUS: f32 = 2.0;
+const OBSTACLE_MAX_RADIUS: f32 = 5.0;
+const ESCAPE_RADIUS: f32 = 5.0;
 
 const NUMBER_MEASUREMENTS_CYCLE: usize = 1;
 
@@ -55,7 +60,8 @@ struct Boid {
     dx: f32,
     dy: f32,
     color : Color,
-    initial: bool
+    initial: bool,
+    reached: bool
 }
 
 #[derive(Eq, Hash, PartialEq)]
@@ -68,10 +74,17 @@ struct BoidPosVel {
     x: f32,
     y: f32,
     dx: f32,
-    dy: f32
+    dy: f32,
+    color: Color
 }
 
 struct Obstacle {
+    x: f32,
+    y: f32,
+    radius: f32
+}
+
+struct Escape {
     x: f32,
     y: f32,
     radius: f32
@@ -110,6 +123,36 @@ impl Obstacle {
     }
 }
 
+impl Escape {
+    pub fn create(obstacles: &Vec<Obstacle>) -> Escape {
+        let mut free = false;
+        let mut x = 0.0;
+        let mut y = 0.0;
+        let radius = ESCAPE_RADIUS;
+        while !free {
+            x = thread_rng().gen_range(3.0 * CANVAS_WIDTH as f32 / 8.0..5.0 * CANVAS_WIDTH as f32 / 8.0);
+            y = thread_rng().gen_range(3.0 * CANVAS_HEIGHT as f32 / 8.0..5.0 * CANVAS_HEIGHT as f32 / 8.0);
+            free = true;
+            for obs in obstacles.iter() {
+                if  ((x - obs.x).powi(2) + (y - obs.y).powi(2)).sqrt() <= radius + obs.radius {
+                        free = false;
+                        break;
+                } 
+            }
+        }
+
+        Escape {
+            x: x,
+            y: y,
+            radius: radius
+        }
+    }
+
+    pub fn draw(&mut self) {
+        draw_circle(self.x, self.y, self.radius, ORANGE);
+    }
+}
+
 impl Boid {
     pub fn create() -> Boid {
         let x = thread_rng().gen_range(CANVAS_WIDTH as f32 / 5.0..4.0 * CANVAS_WIDTH as f32 / 5.0);
@@ -125,14 +168,16 @@ impl Boid {
             height: BOID_WIDTH,
             dx: SPEED,
             dy: 0.0,
-            color : RED,
-            initial: true
+            color : Color{r: 1.0, g: 0.0, b: 0.0, a: 1.0},
+            initial: true,
+            reached: false
         }
     }
 
     pub fn update(&mut self,
                   segments: &HashMap<Segment, Vec<BoidPosVel>>, 
-                  obstacle_segments: &HashMap<Segment, Vec<&Obstacle>>, 
+                  obstacle_segments: &HashMap<Segment, Vec<&Obstacle>>,
+                  escape: &Escape,
                   normal_dist_speed: &Normal<f32>,
                   normal_dist_anchors: &Normal<f32>,
                 ) -> Segment {
@@ -142,14 +187,24 @@ impl Boid {
         let min_seg_y = ((self.y - VISUAL_RANGE).max(0.0) as u32).div(SEGMENT_WIDTH);
         let max_seg_y = ((self.y + VISUAL_RANGE).min(CANVAS_HEIGHT as f32) as u32).div(SEGMENT_WIDTH);
 
+
         let mut avoid_dx : f32 = 0.0;
         let mut avoid_dy : f32 = 0.0;
         let mut avg_x : f32 = 0.0;
         let mut avg_y : f32 = 0.0;
         let mut avg_dx : f32 = 0.0;
         let mut avg_dy : f32 = 0.0;
+        let mut escape_x: f32 = 0.0;
+        let mut escape_y: f32 = 0.0;
 
         let mut others : u32 = 0;
+
+        let mut max_green: f32 = 0.0;
+
+        if (self.x - escape.x).powi(2) + (self.y - escape.y).powi(2) <= escape.radius.powi(2) {
+            self.reached = true;
+            return Segment{x: 0, y: 0};
+        }
 
         for i in min_seg_x..=max_seg_x {
             for j in min_seg_y..=max_seg_y {
@@ -171,6 +226,16 @@ impl Boid {
 
                         others += 1;
                     }
+
+                    if (dx.powi(2) + dy.powi(2)).sqrt() < ESCAPING_BOIDS_VISUAL_RANGE && point.color.g > 0.0 {
+
+                        if max_green < point.color.g {
+                            max_green = point.color.g;
+                            escape_x = point.x;
+                            escape_y = point.y;
+                        }
+                
+                    }
                 }
             }
         }
@@ -183,6 +248,15 @@ impl Boid {
 
             self.dx += (xp - self.x) * CENTERING + (xv - self.dx) * MATCHING;
             self.dy += (yp - self.y) * CENTERING + (yv - self.dy) * MATCHING;
+        }
+
+        if max_green > 0.0 {
+
+            self.dx += (escape_x - self.x) * FOLLOW_ESCAPE;
+            self.dy += (escape_y - self.y) * FOLLOW_ESCAPE;
+            self.color = Color{r: 0.0, g: (max_green - 0.1).max(0.0), b: 0.0, a: 1.0};
+        } else {
+            self.color = Color{r: (self.color.r+0.1).min(1.0), g: (self.color.g-0.5).max(0.0), b: 0.0, a: 1.0};
         }
 
         self.dx += avoid_dx * AVOID;
@@ -215,6 +289,13 @@ impl Boid {
                 }
                 
             }
+        }
+
+        if  ((self.x - escape.x).powi(2) + (self.y - escape.y).powi(2)).sqrt() - escape.radius <= ESCAPE_VISUAL_RANGE {
+
+                self.dx += (escape.x - self.x) * ESCAPE_FACTOR;
+                self.dy += (escape.y - self.y) * ESCAPE_FACTOR;
+                self.color = Color{r: 0.0, g: 1.0, b: 0.0, a: 1.0};
         }
 
         let min_seg_x_anchor = ((self.x - ANCHOR_VISUAL_RANGE).max(0.0) as u32).div(SEGMENT_WIDTH);
@@ -437,6 +518,7 @@ async fn main(){
     let obstacles = (0..NUMBER_OBSTACLES).into_iter().map(|_| Obstacle::create()).collect::<Vec<_>>();
     let normal_dist_speed= Normal::new(0.0, SPEED_STD).unwrap();
     let normal_dist_anchors= Normal::new(0.0, ANCHOR_STD).unwrap();
+    let mut escape = Escape::create(&obstacles);
 
     let mut prev_pos_segments : HashMap<Segment, Vec<BoidPosVel>> = HashMap::new();
     let mut obstacle_segments: HashMap<Segment, Vec<&Obstacle>> = HashMap::new();
@@ -451,7 +533,7 @@ async fn main(){
     for boid in boids.iter() {
         prev_pos_segments.entry(Segment{x: (boid.x as u32).div(SEGMENT_WIDTH), y: (boid.y as u32).div(SEGMENT_WIDTH)})
             .or_insert_with(Vec::new)
-            .push(BoidPosVel{x: boid.x, y: boid.y, dx: boid.dx, dy: boid.dy});
+            .push(BoidPosVel{x: boid.x, y: boid.y, dx: boid.dx, dy: boid.dy, color: boid.color});
     }
 
     let begin_time = SystemTime::now();
@@ -483,15 +565,19 @@ async fn main(){
 
         let mut pos_segments : HashMap<Segment, Vec<BoidPosVel>> = HashMap::new();
         
-        for boid in boids.iter_mut() {
-            pos_segments.entry(boid.update(&prev_pos_segments,&obstacle_segments, &normal_dist_speed, &normal_dist_anchors))
+        for i in 0..boids.len() {
+            pos_segments.entry(boids.get_mut(i).unwrap().update(&prev_pos_segments,&obstacle_segments, &escape, &normal_dist_speed, &normal_dist_anchors))
                 .or_insert_with(Vec::new)
-                .push(BoidPosVel{x: boid.x, y: boid.y, dx: boid.dx, dy: boid.dy});
-            boid.draw();
+                .push(BoidPosVel{x: boids.get_mut(i).unwrap().x, y: boids.get_mut(i).unwrap().y, dx: boids.get_mut(i).unwrap().dx, dy: boids.get_mut(i).unwrap().dy, color: boids.get_mut(i).unwrap().color});
+            if boids.get_mut(i).unwrap().reached {
+                
+                continue;
+            }
+            boids.get_mut(i).unwrap().draw();
 
             // log position
-            differences.push(boid.x - boid.x_est);
-            differences.push(boid.y - boid.y_est);
+            differences.push(boids.get_mut(i).unwrap().x - boids.get_mut(i).unwrap().x_est);
+            differences.push(boids.get_mut(i).unwrap().y - boids.get_mut(i).unwrap().y_est);
             
         }
 
@@ -499,17 +585,22 @@ async fn main(){
             obs.draw();
         }
 
+        escape.draw();
+
         prev_pos_segments = pos_segments;
 
         // logging
-        for i in (0..differences.len()).step_by(2) {
-            contents += format!("[{}, {}],", differences[i], differences[i+1]).as_str();
-        }
-        contents.pop();
-        contents += "]";
+        if differences.len() > 0 {
+            for i in (0..differences.len()).step_by(2) {
+                contents += format!("[{}, {}],", differences[i], differences[i+1]).as_str();
+            }
+            contents.pop();
+            contents += "]";
 
-        writeln!(file, "{}", contents)
-            .expect("Something went wrong");
+            writeln!(file, "{}", contents)
+                .expect("Something went wrong");
+        }
+        
 
 
         let frame_time = get_frame_time();

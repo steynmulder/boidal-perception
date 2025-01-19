@@ -1,5 +1,4 @@
-import ast
-
+from itertools import zip_longest
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
@@ -27,10 +26,20 @@ df['X_Differences'], df['Y_Differences'], df['Trace_X'], df['Trace_Y'] = zip(*df
 
 # Flatten the differences for plotting
 timestamps = df['Timestamp']
-x_differences = np.array(df['X_Differences'].to_list()).flatten()
-y_differences = np.array(df['Y_Differences'].to_list()).flatten()
+max_length = max(len(lst) for lst in df['X_Differences'])
+
+# Pad shorter lists with NaN
+df['X_Differences_Padded'] = df['X_Differences'].apply(
+    lambda lst: list(lst) + [np.nan] * (max_length - len(lst))
+)
+df['Y_Differences_Padded'] = df['Y_Differences'].apply(
+    lambda lst: list(lst) + [np.nan] * (max_length - len(lst))
+)
 trace_x = np.array(df['Trace_X'].to_list())
 trace_y = np.array(df['Trace_Y'].to_list())
+
+x_differences = np.array(df['X_Differences_Padded'].to_list())
+y_differences = np.array(df['Y_Differences_Padded'].to_list())
 
 
 # Duplicate timestamps to match the flattened differences
