@@ -1,6 +1,6 @@
-use std::{collections::HashMap, fs::{File, OpenOptions}, io::{Read, Write}, ops::Div, path::Path, time::SystemTime};
+use std::{collections::HashMap, fs::OpenOptions, io::Write, ops::Div, time::SystemTime};
 
-use nalgebra::{DMatrix, DVector, Matrix};
+use nalgebra::DMatrix;
 
 use macroquad::prelude::*;
 
@@ -9,7 +9,7 @@ use miniquad::window::set_window_size;
 use ::rand::*;
 use rand_distr::{Normal, Distribution};
 
-enum positioning{WLS, EKF}
+enum Positioning{WLS, EKF}
 
 const MINIMUM_FRAME_TIME: f32 = 1. / 30.;
 const CANVAS_WIDTH : u32 = 750;
@@ -17,7 +17,6 @@ const CANVAS_HEIGHT : u32 = 450;
 const NUMBER_BOIDS : u32 = 200;
 const NUMBER_OBSTACLES: u32 = 35;
 const BOID_WIDTH : f32 = 5.0;
-const MARGIN : f32 = 25.0;
 const OBSTACLE_MARGIN: f32 = 10.0;
 const LEFT_MARGIN : f32 = 50.0;
 const RIGHT_MARGIN : f32 = CANVAS_WIDTH as f32 - 50.0;
@@ -45,8 +44,11 @@ const NUMBER_MEASUREMENTS_CYCLE: usize = 1;
 const SPEED_STD: f32 = 0.1;
 const ANCHOR_STD: f32 = 0.1;
 const COLOR_STD: f32 = 0.1;
+const BOID_DIST_STD: f32 = 0.5;
+const BOID_ANGLE_STD: f32 = 0.5;
+const BOID_VEL_STD: f32 = 0.25;
 
-const SIM_POSITIONING: positioning = positioning::EKF;
+const SIM_POSITIONING: Positioning = Positioning::EKF;
 
 
 struct Boid {
@@ -181,6 +183,9 @@ impl Boid {
                   escape: &Escape,
                   normal_dist_speed: &Normal<f32>,
                   normal_dist_anchors: &Normal<f32>,
+                  normal_dist_boid_dist: &Normal<f32>,
+                  normal_dist_boid_angle: &Normal<f32>,
+                  normal_dist_boid_vel: &Normal<f32>,
                   normal_dist_colors: &Normal<f32>
                 ) -> Segment {
         // optimization of checks: use actual coordinates
@@ -211,32 +216,40 @@ impl Boid {
         for i in min_seg_x..=max_seg_x {
             for j in min_seg_y..=max_seg_y {
                 for point in segments.get(&Segment{x: i, y: j}).unwrap_or(&Vec::new()) {
+                    // calculate noisy point of other boid
+                    let distance = ((self.x_est - point.x).powi(2) + (self.y_est - point.y).powi(2)).sqrt() + normal_dist_boid_dist.sample(&mut thread_rng());
+                    let angle = (point.y - self.y).atan2(point.x - self.x) + normal_dist_boid_angle.sample(&mut thread_rng());
+                    if distance <= 0. {
+                        continue;
+                    }
+                    let px = distance * angle.cos() + self.x_est;
+                    let py = distance * angle.sin() + self.y_est;
                     // use noisy coordinates here
-                    let dx = self.x_est - point.x;
-                    let dy = self.y_est - point.y;
+                    let dx = self.x_est - px;
+                    let dy = self.y_est - py;
 
-                    if (dx.powi(2) + dy.powi(2)).sqrt() < SPACE_RANGE {
+                    if distance < SPACE_RANGE {
                         avoid_dx += dx;
                         avoid_dy += dy;
                     }
 
-                    else if (dx.powi(2) + dy.powi(2)).sqrt() < VISUAL_RANGE {
-                        avg_x += point.x;
-                        avg_y += point.y;
-                        avg_dx += point.dx;
-                        avg_dy += point.dy;
+                    else if distance < VISUAL_RANGE {
+                        avg_x += px;
+                        avg_y += py;
+                        avg_dx += point.dx + normal_dist_boid_vel.sample(&mut thread_rng());
+                        avg_dy += point.dy + normal_dist_boid_vel.sample(&mut thread_rng());
 
                         others += 1;
                     }
 
                     let color_uncertainty = normal_dist_colors.sample(&mut thread_rng());
 
-                    if (dx.powi(2) + dy.powi(2)).sqrt() < ESCAPING_BOIDS_VISUAL_RANGE && point.color.g + color_uncertainty > 0.0 {
+                    if distance < ESCAPING_BOIDS_VISUAL_RANGE && point.color.g + color_uncertainty > 0.0 {
 
                         if max_green < point.color.g + color_uncertainty {
                             max_green = point.color.g + color_uncertainty;
-                            escape_x = point.x;
-                            escape_y = point.y;
+                            escape_x = px;
+                            escape_y = py;
                         }
                 
                     }
@@ -250,14 +263,14 @@ impl Boid {
             let xv = avg_dx / (others as f32);
             let yv = avg_dy / (others as f32);
 
-            self.dx += (xp - self.x) * CENTERING / MINIMUM_FRAME_TIME + (xv - self.dx) * MATCHING;
-            self.dy += (yp - self.y) * CENTERING / MINIMUM_FRAME_TIME + (yv - self.dy) * MATCHING;
+            self.dx += (xp - self.x_est) * CENTERING / MINIMUM_FRAME_TIME + (xv - self.dx) * MATCHING;
+            self.dy += (yp - self.y_est) * CENTERING / MINIMUM_FRAME_TIME + (yv - self.dy) * MATCHING;
         }
 
         if max_green > 0.0 {
 
-            self.dx += (escape_x - self.x) * FOLLOW_ESCAPE * max_green;
-            self.dy += (escape_y - self.y) * FOLLOW_ESCAPE * max_green;
+            self.dx += (escape_x - self.x_est) * FOLLOW_ESCAPE * max_green;
+            self.dy += (escape_y - self.y_est) * FOLLOW_ESCAPE * max_green;
             self.color.g = (max_green * 0.5).max(0.0);
 
         } else {
@@ -359,13 +372,13 @@ impl Boid {
                 self.theta_est = self.dy.atan2(self.dx);
             } else {
                 match SIM_POSITIONING {
-                    positioning::WLS => {
+                    Positioning::WLS => {
                         let x_ls = &p.clone().unwrap() * &h.transpose() * c_inv.unwrap() * &z;
                         self.x_est = x_ls[0];
                         self.y_est = x_ls[1];
                         self.theta_est = self.dy.atan2(self.dx);
                     },
-                    positioning::EKF => {
+                    Positioning::EKF => {
                         if self.initial {
                             self.initial = false;
                             let x_ls = &p.clone().unwrap() * &h.transpose() * c_inv.unwrap() * &z;
@@ -397,7 +410,6 @@ impl Boid {
                             } else {
                                 let k = k_1 * k_2.unwrap();
                                 let x_next = &x_pred + &k * (&z - &h_pad * &x_pred);
-                                let p_next = (DMatrix::identity(3, 3) - &k * &h_pad) * &p_pred * (DMatrix::identity(3, 3) - &k * &h_pad).transpose() + &k * &c * &k.transpose(); 
 
                                 self.x_est = x_next[(0, 0)];
                                 self.y_est = x_next[(1, 0)];
@@ -476,30 +488,30 @@ impl Boid {
     fn trilateration(&mut self,
                      anchors: &Vec<&Obstacle>,
                      anchor_measurements: &DMatrix<f32>, 
-                     H: &mut DMatrix<f32>, 
-                     Z: &mut DMatrix<f32>, 
-                     C: &mut DMatrix<f32>, 
+                     h: &mut DMatrix<f32>, 
+                     z: &mut DMatrix<f32>, 
+                     c: &mut DMatrix<f32>, 
                      i: &usize, 
                      l: &usize,
                      number_anchors: &usize) {
                         for j in 0..number_anchors-1 {
-                            H[(l + j, 0)] = 2.0 * (anchors[j+1].x - anchors[j].x);
-                            H[(l + j, 1)] = 2.0 * (anchors[j+1].y - anchors[j].y);
-                            Z[l + j] = -(anchor_measurements[(*i, j+1)]).powi(2) + (anchor_measurements[(*i, j)]).powi(2) 
+                            h[(l + j, 0)] = 2.0 * (anchors[j+1].x - anchors[j].x);
+                            h[(l + j, 1)] = 2.0 * (anchors[j+1].y - anchors[j].y);
+                            z[l + j] = -(anchor_measurements[(*i, j+1)]).powi(2) + (anchor_measurements[(*i, j)]).powi(2) 
                                         + anchors[j+1].x.powi(2) - anchors[j].x.powi(2) + anchors[j+1].y.powi(2) - anchors[j].y.powi(2);
                             
                             if j == 0 {
-                                C[(l + j, l + j)] = 4.0 * ANCHOR_STD.powi(2) * (anchor_measurements[(*i, j+1)].powi(2) + anchor_measurements[(*i, j)].powi(2));
+                                c[(l + j, l + j)] = 4.0 * ANCHOR_STD.powi(2) * (anchor_measurements[(*i, j+1)].powi(2) + anchor_measurements[(*i, j)].powi(2));
                                 if *number_anchors > 2 {
-                                    C[(l + j, l + j + 1)] = -4.0 * ANCHOR_STD.powi(2) * anchor_measurements[(*i, j+1)].powi(2);
+                                    c[(l + j, l + j + 1)] = -4.0 * ANCHOR_STD.powi(2) * anchor_measurements[(*i, j+1)].powi(2);
                                 }
                             } else if j < *number_anchors - 2 {
-                                C[(l + j, l + j - 1)] =  -4.0 * ANCHOR_STD.powi(2) * anchor_measurements[(*i, j)].powi(2);
-                                C[(l + j, l + j)] = 4.0 * ANCHOR_STD.powi(2) * (anchor_measurements[(*i, j+1)].powi(2) + anchor_measurements[(*i, j)].powi(2));
-                                C[(l + j, l + j + 1)] =  -4.0 * ANCHOR_STD.powi(2) * anchor_measurements[(*i, j+1)].powi(2);
+                                c[(l + j, l + j - 1)] =  -4.0 * ANCHOR_STD.powi(2) * anchor_measurements[(*i, j)].powi(2);
+                                c[(l + j, l + j)] = 4.0 * ANCHOR_STD.powi(2) * (anchor_measurements[(*i, j+1)].powi(2) + anchor_measurements[(*i, j)].powi(2));
+                                c[(l + j, l + j + 1)] =  -4.0 * ANCHOR_STD.powi(2) * anchor_measurements[(*i, j+1)].powi(2);
                             } else {
-                                C[(l + j, l + j - 1)] =  -4.0 * ANCHOR_STD.powi(2) * anchor_measurements[(*i, j)].powi(2);
-                                C[(l + j, l + j)] = 4.0 * ANCHOR_STD.powi(2) * (anchor_measurements[(*i, j+1)].powi(2) + anchor_measurements[(*i, j)].powi(2));
+                                c[(l + j, l + j - 1)] =  -4.0 * ANCHOR_STD.powi(2) * anchor_measurements[(*i, j)].powi(2);
+                                c[(l + j, l + j)] = 4.0 * ANCHOR_STD.powi(2) * (anchor_measurements[(*i, j+1)].powi(2) + anchor_measurements[(*i, j)].powi(2));
                             }
 
                         }
@@ -525,7 +537,10 @@ async fn main(){
     let obstacles = (0..NUMBER_OBSTACLES).into_iter().map(|_| Obstacle::create()).collect::<Vec<_>>();
     let normal_dist_speed= Normal::new(0.0, SPEED_STD).unwrap();
     let normal_dist_anchors= Normal::new(0.0, ANCHOR_STD).unwrap();
-    let exp_dist_colors = Normal::new(0.0, COLOR_STD).unwrap();
+    let normal_dist_boid_dist= Normal::new(0.0, BOID_DIST_STD).unwrap();
+    let normal_dist_boid_angle = Normal::new(0.0, BOID_ANGLE_STD).unwrap();
+    let normal_dist_boid_vel = Normal::new(0.0, BOID_VEL_STD).unwrap();
+    let normal_dist_colors = Normal::new(0.0, COLOR_STD).unwrap();
     let mut escape = Escape::create(&obstacles);
 
     let mut prev_pos_segments : HashMap<Segment, Vec<BoidPosVel>> = HashMap::new();
@@ -579,7 +594,10 @@ async fn main(){
                                                                            &escape, 
                                                                            &normal_dist_speed, 
                                                                            &normal_dist_anchors,
-                                                                           &exp_dist_colors))
+                                                                           &normal_dist_boid_dist,
+                                                                           &normal_dist_boid_angle,
+                                                                           &normal_dist_boid_vel,
+                                                                           &normal_dist_colors))
                 .or_insert_with(Vec::new)
                 .push(BoidPosVel{x: boids.get_mut(i).unwrap().x, y: boids.get_mut(i).unwrap().y, dx: boids.get_mut(i).unwrap().dx, dy: boids.get_mut(i).unwrap().dy, color: boids.get_mut(i).unwrap().color});
             if boids.get_mut(i).unwrap().reached {
