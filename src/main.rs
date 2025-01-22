@@ -15,7 +15,7 @@ const MINIMUM_FRAME_TIME: f32 = 1. / 30.;
 const CANVAS_WIDTH : u32 = 750;
 const CANVAS_HEIGHT : u32 = 450;
 const NUMBER_BOIDS : u32 = 200;
-const NUMBER_OBSTACLES: u32 = 50;
+const NUMBER_OBSTACLES: u32 = 35;
 const BOID_WIDTH : f32 = 5.0;
 const MARGIN : f32 = 25.0;
 const OBSTACLE_MARGIN: f32 = 10.0;
@@ -31,11 +31,11 @@ const ANCHOR_VISUAL_RANGE: f32 = 80.0;
 const ESCAPE_VISUAL_RANGE: f32 = 15.0;
 const ESCAPING_BOIDS_VISUAL_RANGE: f32 = 50.0;
 const SPACE_RANGE : f32 = 10.0;
-const CENTERING : f32 = 0.0005;
+const CENTERING : f32 = 0.00025;
 const AVOID : f32 = 0.01;
 const MATCHING : f32 = 0.05;
 const ESCAPE_FACTOR: f32 = 1.0;
-const FOLLOW_ESCAPE: f32 = 0.05;
+const FOLLOW_ESCAPE: f32 = 0.025;
 const OBSTACLE_MIN_RADIUS: f32 = 2.0;
 const OBSTACLE_MAX_RADIUS: f32 = 5.0;
 const ESCAPE_RADIUS: f32 = 5.0;
@@ -44,6 +44,7 @@ const NUMBER_MEASUREMENTS_CYCLE: usize = 1;
 
 const SPEED_STD: f32 = 0.1;
 const ANCHOR_STD: f32 = 0.1;
+const COLOR_STD: f32 = 0.1;
 
 const SIM_POSITIONING: positioning = positioning::EKF;
 
@@ -180,6 +181,7 @@ impl Boid {
                   escape: &Escape,
                   normal_dist_speed: &Normal<f32>,
                   normal_dist_anchors: &Normal<f32>,
+                  normal_dist_colors: &Normal<f32>
                 ) -> Segment {
         // optimization of checks: use actual coordinates
         let min_seg_x = ((self.x - VISUAL_RANGE).max(0.0) as u32).div(SEGMENT_WIDTH);
@@ -227,10 +229,12 @@ impl Boid {
                         others += 1;
                     }
 
-                    if (dx.powi(2) + dy.powi(2)).sqrt() < ESCAPING_BOIDS_VISUAL_RANGE && point.color.g > 0.0 {
+                    let color_uncertainty = normal_dist_colors.sample(&mut thread_rng());
 
-                        if max_green < point.color.g {
-                            max_green = point.color.g;
+                    if (dx.powi(2) + dy.powi(2)).sqrt() < ESCAPING_BOIDS_VISUAL_RANGE && point.color.g + color_uncertainty > 0.0 {
+
+                        if max_green < point.color.g + color_uncertainty {
+                            max_green = point.color.g + color_uncertainty;
                             escape_x = point.x;
                             escape_y = point.y;
                         }
@@ -246,18 +250,21 @@ impl Boid {
             let xv = avg_dx / (others as f32);
             let yv = avg_dy / (others as f32);
 
-            self.dx += (xp - self.x) * CENTERING + (xv - self.dx) * MATCHING;
-            self.dy += (yp - self.y) * CENTERING + (yv - self.dy) * MATCHING;
+            self.dx += (xp - self.x) * CENTERING / MINIMUM_FRAME_TIME + (xv - self.dx) * MATCHING;
+            self.dy += (yp - self.y) * CENTERING / MINIMUM_FRAME_TIME + (yv - self.dy) * MATCHING;
         }
 
         if max_green > 0.0 {
 
-            self.dx += (escape_x - self.x) * FOLLOW_ESCAPE;
-            self.dy += (escape_y - self.y) * FOLLOW_ESCAPE;
-            self.color = Color{r: 0.0, g: (max_green - 0.1).max(0.0), b: 0.0, a: 1.0};
+            self.dx += (escape_x - self.x) * FOLLOW_ESCAPE * max_green;
+            self.dy += (escape_y - self.y) * FOLLOW_ESCAPE * max_green;
+            self.color.g = (max_green * 0.5).max(0.0);
+
         } else {
-            self.color = Color{r: (self.color.r+0.1).min(1.0), g: (self.color.g-0.5).max(0.0), b: 0.0, a: 1.0};
+            self.color.g = (self.color.g-0.5).max(0.0);
         }
+
+        self.color.g = (self.color.g - 0.15).max(0.0);
 
         self.dx += avoid_dx * AVOID;
         self.dy += avoid_dy * AVOID;
@@ -518,6 +525,7 @@ async fn main(){
     let obstacles = (0..NUMBER_OBSTACLES).into_iter().map(|_| Obstacle::create()).collect::<Vec<_>>();
     let normal_dist_speed= Normal::new(0.0, SPEED_STD).unwrap();
     let normal_dist_anchors= Normal::new(0.0, ANCHOR_STD).unwrap();
+    let exp_dist_colors = Normal::new(0.0, COLOR_STD).unwrap();
     let mut escape = Escape::create(&obstacles);
 
     let mut prev_pos_segments : HashMap<Segment, Vec<BoidPosVel>> = HashMap::new();
@@ -566,7 +574,12 @@ async fn main(){
         let mut pos_segments : HashMap<Segment, Vec<BoidPosVel>> = HashMap::new();
         
         for i in 0..boids.len() {
-            pos_segments.entry(boids.get_mut(i).unwrap().update(&prev_pos_segments,&obstacle_segments, &escape, &normal_dist_speed, &normal_dist_anchors))
+            pos_segments.entry(boids.get_mut(i).unwrap().update(&prev_pos_segments,
+                                                                           &obstacle_segments, 
+                                                                           &escape, 
+                                                                           &normal_dist_speed, 
+                                                                           &normal_dist_anchors,
+                                                                           &exp_dist_colors))
                 .or_insert_with(Vec::new)
                 .push(BoidPosVel{x: boids.get_mut(i).unwrap().x, y: boids.get_mut(i).unwrap().y, dx: boids.get_mut(i).unwrap().dx, dy: boids.get_mut(i).unwrap().dy, color: boids.get_mut(i).unwrap().color});
             if boids.get_mut(i).unwrap().reached {
