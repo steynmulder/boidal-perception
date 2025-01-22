@@ -52,6 +52,7 @@ const SIM_POSITIONING: Positioning = Positioning::EKF;
 
 
 struct Boid {
+    id: u32,
     x: f32, // actual x
     y: f32, // actual y
     theta: f32, // actual angle
@@ -74,6 +75,7 @@ struct Segment {
 }
 
 struct BoidPosVel {
+    id: u32,
     x: f32,
     y: f32,
     dx: f32,
@@ -157,10 +159,11 @@ impl Escape {
 }
 
 impl Boid {
-    pub fn create() -> Boid {
+    pub fn create(id: u32) -> Boid {
         let x = thread_rng().gen_range(CANVAS_WIDTH as f32 / 5.0..4.0 * CANVAS_WIDTH as f32 / 5.0);
         let y = thread_rng().gen_range(CANVAS_HEIGHT as f32 / 5.0..4.0 * CANVAS_HEIGHT as f32 / 5.0);
         Boid {
+            id: id,
             x: x,
             y: y,
             theta: 0.0,
@@ -216,6 +219,9 @@ impl Boid {
         for i in min_seg_x..=max_seg_x {
             for j in min_seg_y..=max_seg_y {
                 for point in segments.get(&Segment{x: i, y: j}).unwrap_or(&Vec::new()) {
+                    if point.id == self.id {
+                        continue;
+                    }
                     // calculate noisy point of other boid
                     let distance = ((self.x_est - point.x).powi(2) + (self.y_est - point.y).powi(2)).sqrt() + normal_dist_boid_dist.sample(&mut thread_rng());
                     let angle = (point.y - self.y).atan2(point.x - self.x) + normal_dist_boid_angle.sample(&mut thread_rng());
@@ -533,7 +539,7 @@ async fn main(){
 
     set_window_size(CANVAS_WIDTH, CANVAS_HEIGHT);
 
-    let mut boids = (0..NUMBER_BOIDS).into_iter().map(|_| Boid::create()).collect::<Vec<_>>();
+    let mut boids = (0..NUMBER_BOIDS).into_iter().map(|i| Boid::create(i)).collect::<Vec<_>>();
     let obstacles = (0..NUMBER_OBSTACLES).into_iter().map(|_| Obstacle::create()).collect::<Vec<_>>();
     let normal_dist_speed= Normal::new(0.0, SPEED_STD).unwrap();
     let normal_dist_anchors= Normal::new(0.0, ANCHOR_STD).unwrap();
@@ -556,7 +562,7 @@ async fn main(){
     for boid in boids.iter() {
         prev_pos_segments.entry(Segment{x: (boid.x as u32).div(SEGMENT_WIDTH), y: (boid.y as u32).div(SEGMENT_WIDTH)})
             .or_insert_with(Vec::new)
-            .push(BoidPosVel{x: boid.x, y: boid.y, dx: boid.dx, dy: boid.dy, color: boid.color});
+            .push(BoidPosVel{id: boid.id, x: boid.x, y: boid.y, dx: boid.dx, dy: boid.dy, color: boid.color});
     }
 
     let begin_time = SystemTime::now();
@@ -599,7 +605,7 @@ async fn main(){
                                                                            &normal_dist_boid_vel,
                                                                            &normal_dist_colors))
                 .or_insert_with(Vec::new)
-                .push(BoidPosVel{x: boids.get_mut(i).unwrap().x, y: boids.get_mut(i).unwrap().y, dx: boids.get_mut(i).unwrap().dx, dy: boids.get_mut(i).unwrap().dy, color: boids.get_mut(i).unwrap().color});
+                .push(BoidPosVel{id: boids.get_mut(i).unwrap().id, x: boids.get_mut(i).unwrap().x, y: boids.get_mut(i).unwrap().y, dx: boids.get_mut(i).unwrap().dx, dy: boids.get_mut(i).unwrap().dy, color: boids.get_mut(i).unwrap().color});
             if boids.get_mut(i).unwrap().reached {
                 
                 continue;
