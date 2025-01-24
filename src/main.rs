@@ -394,9 +394,7 @@ impl Boid {
                     Positioning::WLS => {
                         // if self.p_mat.len() == 0 {
                         let x_ls = &p.clone().unwrap() * &h.transpose() * c_inv.unwrap() * &z;
-                        let dx = x_ls[0] - self.x_est;
-                        let dy = x_ls[1] - self.y_est;
-                        self.theta_est = dy.atan2(dx);
+                        self.theta_est = self.dy.atan2(self.dx);
                         self.x_est = x_ls[0];
                         self.y_est = x_ls[1];
 
