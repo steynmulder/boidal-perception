@@ -46,7 +46,7 @@ const ANCHOR_STD: f32 = 5.0;
 const COLOR_STD: f32 = 0.1;
 const BOID_DIST_STD: f32 = 2.5;
 const BOID_ANGLE_STD: f32 = 0.5;
-const BOID_VEL_STD: f32 = 0.25;
+const BOID_VEL_STD: f32 = 1.0;
 const ESCAPE_STD: f32 = 0.1;
 const ESCAPE_ANGLE_STD: f32 = 0.1;
 
