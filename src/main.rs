@@ -1,4 +1,4 @@
-use std::{collections::HashMap, f32::NAN, fs::OpenOptions, io::Write, ops::Div, time::SystemTime};
+use std::{collections::HashMap, fs::OpenOptions, io::Write, ops::Div, time::SystemTime};
 
 use nalgebra::DMatrix;
 
@@ -8,6 +8,7 @@ use miniquad::window::set_window_size;
 
 use ::rand::*;
 use rand_distr::{Normal, Distribution};
+use ::rand::rngs::StdRng;
 
 enum Positioning{WLS, EKF}
 
@@ -51,6 +52,8 @@ const ESCAPE_STD: f32 = 0.1;
 const ESCAPE_ANGLE_STD: f32 = 0.1;
 
 const SIM_POSITIONING: Positioning = Positioning::WLS;
+
+const SEED: u64 = 500;
 
 
 struct Boid {
@@ -100,11 +103,11 @@ struct Escape {
 
 impl Obstacle {
 
-    pub fn create() -> Obstacle {
-        let w = thread_rng().gen_range(OBSTACLE_MIN_RADIUS..OBSTACLE_MAX_RADIUS);
+    pub fn create(r: &mut StdRng) -> Obstacle {
+        let w = r.gen_range(OBSTACLE_MIN_RADIUS..OBSTACLE_MAX_RADIUS);
         Obstacle {
-            x: thread_rng().gen_range(0.0..CANVAS_WIDTH as f32),
-            y: thread_rng().gen_range(0.0..CANVAS_HEIGHT as f32),
+            x: r.gen_range(0.0..CANVAS_WIDTH as f32),
+            y: r.gen_range(0.0..CANVAS_HEIGHT as f32),
             radius: w
         }
     }
@@ -132,14 +135,14 @@ impl Obstacle {
 }
 
 impl Escape {
-    pub fn create(obstacles: &Vec<Obstacle>) -> Escape {
+    pub fn create(obstacles: &Vec<Obstacle>, r: &mut StdRng) -> Escape {
         let mut free = false;
         let mut x = 0.0;
         let mut y = 0.0;
         let radius = ESCAPE_RADIUS;
         while !free {
-            x = thread_rng().gen_range(3.0 * CANVAS_WIDTH as f32 / 8.0..5.0 * CANVAS_WIDTH as f32 / 8.0);
-            y = thread_rng().gen_range(3.0 * CANVAS_HEIGHT as f32 / 8.0..5.0 * CANVAS_HEIGHT as f32 / 8.0);
+            x = r.gen_range(3.0 * CANVAS_WIDTH as f32 / 8.0..5.0 * CANVAS_WIDTH as f32 / 8.0);
+            y = r.gen_range(3.0 * CANVAS_HEIGHT as f32 / 8.0..5.0 * CANVAS_HEIGHT as f32 / 8.0);
             free = true;
             for obs in obstacles.iter() {
                 if  ((x - obs.x).powi(2) + (y - obs.y).powi(2)).sqrt() <= radius + obs.radius {
@@ -162,9 +165,9 @@ impl Escape {
 }
 
 impl Boid {
-    pub fn create(id: u32) -> Boid {
-        let x = thread_rng().gen_range(CANVAS_WIDTH as f32 / 5.0..4.0 * CANVAS_WIDTH as f32 / 5.0);
-        let y = thread_rng().gen_range(CANVAS_HEIGHT as f32 / 5.0..4.0 * CANVAS_HEIGHT as f32 / 5.0);
+    pub fn create(id: u32, r: &mut StdRng) -> Boid {
+        let x = r.gen_range(CANVAS_WIDTH as f32 / 5.0..4.0 * CANVAS_WIDTH as f32 / 5.0);
+        let y = r.gen_range(CANVAS_HEIGHT as f32 / 5.0..4.0 * CANVAS_HEIGHT as f32 / 5.0);
         Boid {
             id: id,
             x: x,
@@ -195,7 +198,8 @@ impl Boid {
                   normal_dist_boid_vel: &Normal<f32>,
                   normal_dist_colors: &Normal<f32>,
                   normal_dist_escape: &Normal<f32>,
-                  normal_dist_escape_angle: &Normal<f32>
+                  normal_dist_escape_angle: &Normal<f32>,
+                  r: &mut StdRng
                 ) -> Segment {
         // optimization of checks: use actual coordinates
         let min_seg_x = ((self.x - SONAR_RANGE).max(0.0) as u32).div(SEGMENT_WIDTH);
@@ -230,7 +234,7 @@ impl Boid {
                     }
                     // calculate noisy point of other boid
                     let distance = ((self.x_est - point.x).powi(2) + (self.y_est - point.y).powi(2)).sqrt() + normal_dist_boid_dist.sample(&mut thread_rng());
-                    let angle = (point.y - self.y_est).atan2(point.x - self.x_est) + normal_dist_boid_angle.sample(&mut thread_rng());
+                    let angle = (point.y - self.y_est).atan2(point.x - self.x_est) + normal_dist_boid_angle.sample(r);
                     if distance <= 0. {
                         continue;
                     }
@@ -248,13 +252,13 @@ impl Boid {
                     else if distance < SONAR_RANGE {
                         avg_x += px;
                         avg_y += py;
-                        avg_dx += point.dx + normal_dist_boid_vel.sample(&mut thread_rng());
-                        avg_dy += point.dy + normal_dist_boid_vel.sample(&mut thread_rng());
+                        avg_dx += point.dx + normal_dist_boid_vel.sample(r);
+                        avg_dy += point.dy + normal_dist_boid_vel.sample(r);
 
                         others += 1;
                     }
 
-                    let color_uncertainty = normal_dist_colors.sample(&mut thread_rng());
+                    let color_uncertainty = normal_dist_colors.sample(r);
 
                     if distance < ESCAPING_BOIDS_VISUAL_RANGE && point.color.g + color_uncertainty > 0.0 {
 
@@ -305,7 +309,7 @@ impl Boid {
         for i in min_seg_x..=max_seg_x {
             for j in min_seg_y..=max_seg_y {
                 for obs in obstacle_segments.get(&Segment{x: i, y: j}).unwrap_or(&Vec::new()) {
-                    let margins = obs.margins(&self, normal_dist_boid_dist.sample(&mut thread_rng()), normal_dist_boid_dist.sample(&mut thread_rng()));
+                    let margins = obs.margins(&self, normal_dist_boid_dist.sample(r), normal_dist_boid_dist.sample(&mut thread_rng()));
                 
                     if let Some(result) = margins {
                         if result < OBSTACLE_MARGIN {
@@ -325,7 +329,7 @@ impl Boid {
         }
 
         let distance_escape = ((self.x_est - escape.x).powi(2) + (self.y_est - escape.y).powi(2)).sqrt() - escape.radius + normal_dist_escape.sample(&mut thread_rng());
-        let angle_escape = (escape.y - self.y_est).atan2(escape.x - self.x_est) + normal_dist_escape_angle.sample(&mut thread_rng());
+        let angle_escape = (escape.y - self.y_est).atan2(escape.x - self.x_est) + normal_dist_escape_angle.sample(r);
 
         if distance_escape <= ESCAPE_VISUAL_RANGE {
 
@@ -366,7 +370,7 @@ impl Boid {
 
             for _i in 0..NUMBER_MEASUREMENTS_CYCLE {
                 for distance in true_distances_anchors.clone().into_iter() {
-                    noisy_distances.push(distance + normal_dist_anchors.sample(&mut thread_rng()));
+                    noisy_distances.push(distance + normal_dist_anchors.sample(r));
                 }
             }
 
@@ -469,8 +473,8 @@ impl Boid {
 
         // actual movement with noise in speed actuation
 
-        let dx_samp = normal_dist_speed.sample(&mut thread_rng());
-        let dy_samp = normal_dist_speed.sample(&mut thread_rng());
+        let dx_samp = normal_dist_speed.sample(r);
+        let dy_samp = normal_dist_speed.sample(r);
 
         let speed_actual = ((self.dx + dx_samp).powi(2) + (self.dy + dy_samp).powi(2)).sqrt();
 
@@ -617,8 +621,10 @@ async fn main(){
 
     set_window_size(CANVAS_WIDTH, CANVAS_HEIGHT);
 
-    let mut boids = (0..NUMBER_BOIDS).into_iter().map(|i| Boid::create(i)).collect::<Vec<_>>();
-    let obstacles = (0..NUMBER_OBSTACLES).into_iter().map(|_| Obstacle::create()).collect::<Vec<_>>();
+    let mut r = StdRng::seed_from_u64(SEED);
+
+    let mut boids = (0..NUMBER_BOIDS).into_iter().map(|i| Boid::create(i, &mut r)).collect::<Vec<_>>();
+    let obstacles = (0..NUMBER_OBSTACLES).into_iter().map(|_| Obstacle::create(&mut r)).collect::<Vec<_>>();
     let normal_dist_speed= Normal::new(0.0, SPEED_STD).unwrap();
     let normal_dist_anchors= Normal::new(0.0, ANCHOR_STD).unwrap();
     let normal_dist_boid_dist= Normal::new(0.0, BOID_DIST_STD).unwrap();
@@ -627,7 +633,7 @@ async fn main(){
     let normal_dist_colors = Normal::new(0.0, COLOR_STD).unwrap();
     let normal_dist_escape = Normal::new(0.0, ESCAPE_STD).unwrap();
     let normal_dist_escape_angle = Normal::new(0.0, ESCAPE_ANGLE_STD).unwrap();
-    let mut escape = Escape::create(&obstacles);
+    let mut escape = Escape::create(&obstacles, &mut r);
 
     let mut prev_pos_segments : HashMap<Segment, Vec<BoidPosVel>> = HashMap::new();
     let mut obstacle_segments: HashMap<Segment, Vec<&Obstacle>> = HashMap::new();
@@ -685,7 +691,8 @@ async fn main(){
                                                                         &normal_dist_boid_vel,
                                                                         &normal_dist_colors,
                                                                         &normal_dist_escape,
-                                                                        &normal_dist_escape_angle);
+                                                                        &normal_dist_escape_angle,
+                                                                        &mut r);
             pos_segments.entry(segment)
                 .or_insert_with(Vec::new)
                 .push(BoidPosVel{id: boids.get_mut(i).unwrap().id, x: boids.get_mut(i).unwrap().x, y: boids.get_mut(i).unwrap().y, dx: boids.get_mut(i).unwrap().dx, dy: boids.get_mut(i).unwrap().dy, color: boids.get_mut(i).unwrap().color});
