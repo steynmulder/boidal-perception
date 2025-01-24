@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs::OpenOptions, io::Write, ops::Div, time::SystemTime};
+use std::{collections::HashMap, f32::NAN, fs::OpenOptions, io::Write, ops::Div, time::SystemTime};
 
 use nalgebra::DMatrix;
 
@@ -14,7 +14,7 @@ enum Positioning{WLS, EKF}
 const MINIMUM_FRAME_TIME: f32 = 1. / 30.;
 const CANVAS_WIDTH : u32 = 750;
 const CANVAS_HEIGHT : u32 = 450;
-const NUMBER_BOIDS : u32 = 200;
+const NUMBER_BOIDS : u32 = 100;
 const NUMBER_OBSTACLES: u32 = 35;
 const BOID_WIDTH : f32 = 5.0;
 const OBSTACLE_MARGIN: f32 = 10.0;
@@ -50,7 +50,7 @@ const BOID_VEL_STD: f32 = 1.0;
 const ESCAPE_STD: f32 = 0.1;
 const ESCAPE_ANGLE_STD: f32 = 0.1;
 
-const SIM_POSITIONING: Positioning = Positioning::EKF;
+const SIM_POSITIONING: Positioning = Positioning::WLS;
 
 
 struct Boid {
@@ -67,7 +67,8 @@ struct Boid {
     dy: f32,
     color : Color,
     initial: bool,
-    reached: bool
+    reached: bool,
+    p_mat: Vec<f32>
 }
 
 #[derive(Eq, Hash, PartialEq)]
@@ -178,7 +179,8 @@ impl Boid {
             dy: 0.0,
             color : Color{r: 1.0, g: 0.0, b: 0.0, a: 1.0},
             initial: true,
-            reached: false
+            reached: false,
+            p_mat: Vec::new()
         }
     }
 
@@ -215,7 +217,7 @@ impl Boid {
 
         let mut max_green: f32 = 0.0;
 
-        if self.color.g == 1.0 {
+        if self.color.g == 1.0 || ((self.x - escape.x).powi(2) + (self.y - escape.y).powi(2)).sqrt() <= escape.radius + 5.0 {
             self.reached = true;
             return Segment{x: 0, y: 0};
         }
@@ -390,10 +392,23 @@ impl Boid {
             } else {
                 match SIM_POSITIONING {
                     Positioning::WLS => {
+                        // if self.p_mat.len() == 0 {
                         let x_ls = &p.clone().unwrap() * &h.transpose() * c_inv.unwrap() * &z;
+                        let dx = x_ls[0] - self.x_est;
+                        let dy = x_ls[1] - self.y_est;
+                        self.theta_est = dy.atan2(dx);
                         self.x_est = x_ls[0];
                         self.y_est = x_ls[1];
-                        self.theta_est = self.dy.atan2(self.dx);
+
+                        //     let p_m = p.unwrap();
+                        //     self.p_mat.push(p_m[(0,0)]);
+                        //     self.p_mat.push(p_m[(0,1)]);
+                        //     self.p_mat.push(p_m[(1,0)]);
+                        //     self.p_mat.push(p_m[(1,1)]);
+                        // } else {
+                        //     self.recursive_wls(&mut h, &mut z, &mut c);
+                        // }
+                        
                     },
                     Positioning::EKF => {
                         if self.initial {
@@ -533,6 +548,68 @@ impl Boid {
 
                         }
                      }
+    
+    fn recursive_wls(&mut self, h: &mut DMatrix<f32>, z: &mut DMatrix<f32>, c: &mut DMatrix<f32>) {
+    // Recreate covariance matrix from stored values
+    let mut p : DMatrix<f32> = DMatrix::zeros(2, 2);
+    p[(0,0)] = self.p_mat[0]; 
+    p[(0,1)] = self.p_mat[1]; 
+    p[(1,0)] = self.p_mat[2]; 
+    p[(1,1)] = self.p_mat[3];
+
+    // Compute innovation covariance with added small regularization
+    let h_k = h.clone();
+    let z_k = z.clone();
+    let epsilon = 1e-6; // Small regularization term
+    let s = &h_k * &p * &h_k.transpose() + DMatrix::identity(h_k.nrows(), h_k.nrows()) * epsilon;
+
+    // Robust matrix inversion check
+    let s_inv = match s.clone().try_inverse() {
+        Some(inv) => inv,
+        None => {
+            // Fallback: use pseudoinverse or identity if inversion fails
+            println!("Matrix inversion failed, using identity matrix");
+            DMatrix::identity(s.nrows(), s.nrows())
+        }
+    };
+
+    // Compute Kalman gain
+    let w = &p * &h.transpose() * s_inv;
+
+    // State update
+    let x = DMatrix::from_column_slice(2, 1, &[self.x_est, self.y_est]);
+    let x_k = &x + &w * (&z_k - &h_k * &x);
+
+    if x_k[(0,0)] == NAN || x_k[(1,0)] == NAN {
+        // noisy movement with ideal speed actuation
+        let speed = (self.dx.powi(2) + self.dy.powi(2)).sqrt();
+
+        self.x_est += (self.dx / speed) * SPEED;
+        self.y_est += (self.dy / speed) * SPEED;
+
+        // estimated angle with ideal speed actuation
+        self.theta_est = self.dy.atan2(self.dx);
+        return;
+    }
+
+    let dx = x_k[(0,0)] - self.x_est;
+    let dy = x_k[(1,0)] - self.y_est;
+    self.theta_est = dy.atan2(dx);
+    self.x_est = x_k[(0,0)];
+    self.y_est = x_k[(1,0)];
+
+
+    // Covariance update
+    let p_k = (DMatrix::identity(2, 2) - &w * h_k) * &p;
+
+    // Update stored covariance matrix
+    self.p_mat = vec![
+        p_k[(0,0)],
+        p_k[(0,1)],
+        p_k[(1,0)],
+        p_k[(1,1)]
+    ];
+}
 
     fn dynamic(&mut self, omega: f32) -> DMatrix<f32> {
         let mut state= DMatrix::zeros(3, 1);
@@ -608,19 +685,21 @@ async fn main(){
         let mut pos_segments : HashMap<Segment, Vec<BoidPosVel>> = HashMap::new();
         
         for i in 0..boids.len() {
-            pos_segments.entry(boids.get_mut(i).unwrap().update(&prev_pos_segments,
-                                                                           &obstacle_segments, 
-                                                                           &escape, 
-                                                                           &normal_dist_speed, 
-                                                                           &normal_dist_anchors,
-                                                                           &normal_dist_boid_dist,
-                                                                           &normal_dist_boid_angle,
-                                                                           &normal_dist_boid_vel,
-                                                                           &normal_dist_colors,
-                                                                           &normal_dist_escape,
-                                                                           &normal_dist_escape_angle))
+            let segment = boids.get_mut(i).unwrap().update(&prev_pos_segments,
+                                                                        &obstacle_segments, 
+                                                                        &escape, 
+                                                                        &normal_dist_speed, 
+                                                                        &normal_dist_anchors,
+                                                                        &normal_dist_boid_dist,
+                                                                        &normal_dist_boid_angle,
+                                                                        &normal_dist_boid_vel,
+                                                                        &normal_dist_colors,
+                                                                        &normal_dist_escape,
+                                                                        &normal_dist_escape_angle);
+            pos_segments.entry(segment)
                 .or_insert_with(Vec::new)
                 .push(BoidPosVel{id: boids.get_mut(i).unwrap().id, x: boids.get_mut(i).unwrap().x, y: boids.get_mut(i).unwrap().y, dx: boids.get_mut(i).unwrap().dx, dy: boids.get_mut(i).unwrap().dy, color: boids.get_mut(i).unwrap().color});
+
             if boids.get_mut(i).unwrap().reached {
                 
                 continue;
@@ -644,6 +723,9 @@ async fn main(){
         // logging
         if differences.len() > 0 {
             for i in (0..differences.len()).step_by(2) {
+                if differences[i].is_nan() || differences[i+1].is_nan() {
+                    continue;
+                }
                 contents += format!("[{}, {}],", differences[i], differences[i+1]).as_str();
             }
             contents.pop();
