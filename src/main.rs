@@ -550,38 +550,30 @@ impl Boid {
                      }
     
     fn recursive_wls(&mut self, h: &mut DMatrix<f32>, z: &mut DMatrix<f32>, c: &mut DMatrix<f32>) {
-    // Recreate covariance matrix from stored values
     let mut p : DMatrix<f32> = DMatrix::zeros(2, 2);
     p[(0,0)] = self.p_mat[0]; 
     p[(0,1)] = self.p_mat[1]; 
     p[(1,0)] = self.p_mat[2]; 
     p[(1,1)] = self.p_mat[3];
 
-    // Compute innovation covariance with added small regularization
     let h_k = h.clone();
     let z_k = z.clone();
-    let epsilon = 1e-6; // Small regularization term
+    let epsilon = 1e-6;
     let s = &h_k * &p * &h_k.transpose() + DMatrix::identity(h_k.nrows(), h_k.nrows()) * epsilon;
 
-    // Robust matrix inversion check
     let s_inv = match s.clone().try_inverse() {
         Some(inv) => inv,
         None => {
-            // Fallback: use pseudoinverse or identity if inversion fails
-            println!("Matrix inversion failed, using identity matrix");
             DMatrix::identity(s.nrows(), s.nrows())
         }
     };
 
-    // Compute Kalman gain
     let w = &p * &h.transpose() * s_inv;
 
-    // State update
     let x = DMatrix::from_column_slice(2, 1, &[self.x_est, self.y_est]);
     let x_k = &x + &w * (&z_k - &h_k * &x);
 
-    if x_k[(0,0)] == NAN || x_k[(1,0)] == NAN {
-        // noisy movement with ideal speed actuation
+    if x_k[(0,0)].is_nan() || x_k[(1,0)].is_nan() {
         let speed = (self.dx.powi(2) + self.dy.powi(2)).sqrt();
 
         self.x_est += (self.dx / speed) * SPEED;
